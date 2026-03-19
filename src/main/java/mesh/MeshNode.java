@@ -64,14 +64,14 @@ public class MeshNode {
 
             if (input.isEmpty()) continue;
 
-            if (input.equals("/exit")) {
+            if (input.equals("/q")) {
                 stop();
                 break;
-            } else if (input.equals("/list")) {
+            } else if (input.equals("/l")) {
                 printNodes();
-            } else if (input.startsWith("/send ")) {
+            } else if (input.startsWith("/s ")) {
                 handleSendCommand(input);
-            } else if (input.startsWith("/broadcast ")) {
+            } else if (input.startsWith("/b ")) {
                 handleBroadcastCommand(input);
             } else {
                 System.out.println("❌ Неизвестная команда");
