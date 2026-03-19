@@ -117,11 +117,11 @@ public class MeshNode {
     }
 
     private void handleBroadcastCommand(String input) {
-        String text = input.substring(10); // после "/broadcast "
+        String text = input.substring(2); // после "/broadcast "
         if (text.isEmpty()) {
             System.out.println("❌ Введите текст для broadcast");
             return;
-        }
+        }//broadcast
         messageService.broadcastMessage(text);
     }
 
