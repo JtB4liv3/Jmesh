@@ -64,14 +64,14 @@ public class MeshNode {
 
             if (input.isEmpty()) continue;
 
-            if (input.equals("/q")) {
+            if (input.equals("/exit")) {
                 stop();
                 break;
-            } else if (input.equals("/l")) {
+            } else if (input.equals("/list")) {
                 printNodes();
-            } else if (input.startsWith("/s ")) {
+            } else if (input.startsWith("/send ")) {
                 handleSendCommand(input);
-            } else if (input.startsWith("/b ")) {
+            } else if (input.startsWith("/broadcast ")) {
                 handleBroadcastCommand(input);
             } else {
                 System.out.println("❌ Неизвестная команда");
@@ -117,11 +117,11 @@ public class MeshNode {
     }
 
     private void handleBroadcastCommand(String input) {
-        String text = input.substring(2); // после "/broadcast "
+        String text = input.substring(10); // после "/broadcast "
         if (text.isEmpty()) {
             System.out.println("❌ Введите текст для broadcast");
             return;
-        }//broadcast
+        }
         messageService.broadcastMessage(text);
     }
 
