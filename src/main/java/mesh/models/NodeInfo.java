@@ -1,4 +1,4 @@
-package mesh.models;
+package main.java.mesh.models;
 
 import java.net.InetAddress;
 import java.time.Instant;
