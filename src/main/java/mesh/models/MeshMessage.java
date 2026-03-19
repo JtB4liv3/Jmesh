@@ -20,7 +20,8 @@ public class MeshMessage implements Serializable {
         DISCOVERY_REPLY, // Ответ на поиск
         ROUTING_UPDATE,  // Обновление маршрутов
         USER_MESSAGE,    // Пользовательское сообщение
-        BROADCAST        // Широковещательное сообщение
+        BROADCAST,        // Широковещательное сообщение
+        ACK  // новый тип для подтверждений
     }
 
     public MeshMessage(String senderId, String targetId, String text, MessageType type) {

@@ -9,17 +9,23 @@ import java.net.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.HashSet;
+import java.util.Set;
 
 public class DiscoveryService {
     private static final int DISCOVERY_PORT = 8888;
     private static final String BROADCAST_ADDR = "255.255.255.255";
-    private static final int DISCOVERY_INTERVAL = 5; // секунд
+    private static final int DISCOVERY_INTERVAL = 10; // увеличили до 10 секунд
+    private static final int NEIGHBOR_TIMEOUT = 30000; // 30 секунд таймаут
 
     private final MeshNode localNode;
     private final RoutingTable routingTable;
     private DatagramSocket socket;
     private ScheduledExecutorService scheduler;
     private boolean running;
+
+    // Множество известных узлов, чтобы не спамить сообщениями о новых соседях
+    private final Set<String> knownNodes = new HashSet<>();
 
     public DiscoveryService(MeshNode localNode, RoutingTable routingTable) {
         this.localNode = localNode;
@@ -34,23 +40,22 @@ public class DiscoveryService {
         running = true;
         scheduler = Executors.newScheduledThreadPool(2);
 
-        // Поток для прослушивания ответов
         new Thread(this::listenForDiscoveries).start();
 
-        // Периодическая рассылка discovery-сообщений
+        // Увеличили интервал до 10 секунд
         scheduler.scheduleAtFixedRate(this::broadcastDiscovery,
                 0, DISCOVERY_INTERVAL, TimeUnit.SECONDS);
 
-        // Периодическая очистка неактивных соседей
         scheduler.scheduleAtFixedRate(() ->
-                routingTable.cleanupStaleNeighbors(15000), 15, 15, TimeUnit.SECONDS);
+                        routingTable.cleanupStaleNeighbors(NEIGHBOR_TIMEOUT),
+                30, 30, TimeUnit.SECONDS); // очистка реже
 
-        System.out.println("🔍 Discovery service запущен на порту " + DISCOVERY_PORT);
+        System.out.println("🔍 Discovery service запущен (поиск соседей каждые " +
+                DISCOVERY_INTERVAL + " секунд)");
     }
 
     private void broadcastDiscovery() {
         try {
-            // Создаем discovery-сообщение
             MeshMessage discoveryMsg = new MeshMessage(
                     localNode.getNodeId(),
                     "ALL",
@@ -64,17 +69,14 @@ public class DiscoveryService {
             oos.flush();
             byte[] sendData = baos.toByteArray();
 
-            // Отправляем broadcast
             DatagramPacket sendPacket = new DatagramPacket(
                     sendData, sendData.length,
                     InetAddress.getByName(BROADCAST_ADDR), DISCOVERY_PORT
             );
             socket.send(sendPacket);
 
-            // System.out.println("📢 Отправлен discovery broadcast");
-
         } catch (Exception e) {
-            System.err.println("Ошибка отправки discovery: " + e.getMessage());
+            // Игнорируем ошибки, чтобы не спамить
         }
     }
 
@@ -86,8 +88,8 @@ public class DiscoveryService {
             try {
                 socket.receive(packet);
 
-                // Не обрабатываем свои же сообщения
-                if (packet.getAddress().getHostAddress().equals(NetworkUtils.getLocalIpAddress())) {
+                String senderIp = packet.getAddress().getHostAddress();
+                if (senderIp.equals(NetworkUtils.getLocalIpAddress())) {
                     continue;
                 }
 
@@ -95,40 +97,43 @@ public class DiscoveryService {
                 ObjectInputStream ois = new ObjectInputStream(bais);
                 MeshMessage message = (MeshMessage) ois.readObject();
 
-                handleDiscoveryMessage(message, packet.getAddress());
+                // Обрабатываем без лишнего вывода
+                if (message.getType() == MeshMessage.MessageType.DISCOVERY) {
+                    sendDiscoveryReply(packet.getAddress());
+                } else if (message.getType() == MeshMessage.MessageType.DISCOVERY_REPLY) {
+                    handleDiscoveryReply(message, packet.getAddress());
+                }
 
             } catch (SocketException e) {
                 if (running) {
-                    System.err.println("Socket error: " + e.getMessage());
+                    System.err.println("Ошибка сокета: " + e.getMessage());
                 }
-            } catch (EOFException e) {
-                // Игнорируем, иногда пакеты обрезаются
             } catch (Exception e) {
-                if (running) {
-                    System.err.println("Ошибка обработки discovery: " + e.getMessage());
-                }
+                // Игнорируем остальные ошибки
             }
         }
     }
 
-    private void handleDiscoveryMessage(MeshMessage message, InetAddress address) {
-        switch (message.getType()) {
-            case DISCOVERY:
-                // Получили discovery-запрос, отвечаем
-                sendDiscoveryReply(address);
-                break;
+    private void handleDiscoveryReply(MeshMessage message, InetAddress address) {
+        // Проверяем, новый ли это узел
+        if (!knownNodes.contains(message.getSenderId())) {
+            knownNodes.add(message.getSenderId());
 
-            case DISCOVERY_REPLY:
-                // Получили ответ на наш discovery
-                NodeInfo newNode = new NodeInfo(
-                        message.getSenderId(),
-                        address,
-                        DISCOVERY_PORT
-                );
-                routingTable.updateNeighbor(newNode);
-                System.out.println("✅ Обнаружен новый узел: " + newNode);
-                routingTable.printRoutingTable();
-                break;
+            NodeInfo newNode = new NodeInfo(
+                    message.getSenderId(),
+                    address,
+                    DISCOVERY_PORT
+            );
+            routingTable.updateNeighbor(newNode);
+
+            // Показываем приглашение ввода после сообщения
+            System.out.print("\n✅ Обнаружен новый узел: " + newNode.getNodeId() + "\nmesh> ");
+        } else {
+            // Просто обновляем время последнего контакта
+            NodeInfo existingNode = routingTable.getNeighborInfo(message.getSenderId());
+            if (existingNode != null) {
+                existingNode.setLastSeen(new java.util.Date().toInstant());
+            }
         }
     }
 
@@ -154,7 +159,7 @@ public class DiscoveryService {
             socket.send(sendPacket);
 
         } catch (Exception e) {
-            System.err.println("Ошибка отправки reply: " + e.getMessage());
+            // Игнорируем
         }
     }
 

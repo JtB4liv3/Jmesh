@@ -10,14 +10,16 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class MessageService {
     private static final int MESSAGE_PORT = 8889;
+    private static final int MAX_RETRIES = 3; // количество попыток отправки
+    private static final int ACK_TIMEOUT = 2000; // таймаут подтверждения (мс)
 
     private final MeshNode localNode;
     private final RoutingTable routingTable;
     private DatagramSocket socket;
     private boolean running;
 
-    // Множество для дедупликации сообщений
     private final Set<String> processedMessages = ConcurrentHashMap.newKeySet();
+    private final Set<String> awaitingAck = ConcurrentHashMap.newKeySet();
 
     public MessageService(MeshNode localNode, RoutingTable routingTable) {
         this.localNode = localNode;
@@ -27,6 +29,7 @@ public class MessageService {
     public void start() throws SocketException {
         socket = new DatagramSocket(MESSAGE_PORT);
         socket.setReuseAddress(true);
+        socket.setSoTimeout(1000); // таймаут на receive
         running = true;
 
         new Thread(this::listenForMessages).start();
@@ -47,12 +50,12 @@ public class MessageService {
 
                 handleIncomingMessage(message, packet.getAddress());
 
-            } catch (SocketException e) {
-                if (running) {
-                    System.err.println("Message socket error: " + e.getMessage());
-                }
+            } catch (SocketTimeoutException e) {
+                // Таймаут - нормально, продолжаем
             } catch (Exception e) {
-                System.err.println("Ошибка обработки сообщения: " + e.getMessage());
+                if (running) {
+                    System.err.println("Ошибка: " + e.getMessage());
+                }
             }
         }
     }
@@ -60,53 +63,64 @@ public class MessageService {
     private void handleIncomingMessage(MeshMessage message, InetAddress fromAddress) {
         // Дедупликация
         if (processedMessages.contains(message.getMessageId())) {
-            return; // Уже видели это сообщение
+            return;
         }
         processedMessages.add(message.getMessageId());
 
-        // Уменьшаем TTL
-        message.decrementTtl();
-
-        if (message.isExpired()) {
-            System.out.println("⏰ Сообщение истекло (TTL=0): " + message.getMessageId());
+        // Если это подтверждение получения
+        if (message.getType() == MeshMessage.MessageType.ACK) {
+            awaitingAck.remove(message.getMessageId());
             return;
         }
 
-        // Обновляем информацию об отправителе в таблице маршрутизации
-        if (!message.getSenderId().equals(localNode.getNodeId())) {
-            NodeInfo senderInfo = routingTable.getNeighborInfo(message.getSenderId());
-            if (senderInfo == null) {
-                // Новый узел, добавляем как соседа
-                senderInfo = new NodeInfo(
-                        message.getSenderId(),
-                        fromAddress,
-                        MESSAGE_PORT
-                );
-                routingTable.updateNeighbor(senderInfo);
-            }
+        message.decrementTtl();
+
+        if (message.isExpired()) {
+            return;
         }
 
-        // Проверяем, предназначено ли сообщение нам
+        // Проверяем, нам ли сообщение
         boolean isForUs = message.getTargetId().equals(localNode.getNodeId()) ||
                 message.getTargetId().equals("ALL") ||
                 message.getType() == MeshMessage.MessageType.BROADCAST;
 
         if (isForUs) {
             displayMessage(message);
+            // Отправляем подтверждение
+            sendAck(message.getMessageId(), fromAddress);
         }
 
-        // Если сообщение не для нас ИЛИ это broadcast, пересылаем дальше
-        if (!message.getTargetId().equals(localNode.getNodeId()) ||
-                message.getType() == MeshMessage.MessageType.BROADCAST) {
-            forwardMessage(message, fromAddress);
+        // Пересылаем дальше
+        forwardMessage(message, fromAddress);
+    }
+
+    private void sendAck(String messageId, InetAddress toAddress) {
+        try {
+            MeshMessage ackMsg = new MeshMessage(
+                    localNode.getNodeId(),
+                    "ACK",
+                    messageId,
+                    MeshMessage.MessageType.ACK
+            );
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ObjectOutputStream oos = new ObjectOutputStream(baos);
+            oos.writeObject(ackMsg);
+
+            DatagramPacket packet = new DatagramPacket(
+                    baos.toByteArray(), baos.size(),
+                    toAddress, MESSAGE_PORT
+            );
+            socket.send(packet);
+
+        } catch (Exception e) {
+            // Игнорируем
         }
     }
 
     private void forwardMessage(MeshMessage message, InetAddress fromAddress) {
-        // Пересылаем всем соседям, кроме того, от кого пришло
         for (NodeInfo neighbor : routingTable.getAllNeighbors()) {
             try {
-                // Не отправляем обратно отправителю
                 if (neighbor.getAddress().equals(fromAddress)) {
                     continue;
                 }
@@ -114,20 +128,15 @@ public class MessageService {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 ObjectOutputStream oos = new ObjectOutputStream(baos);
                 oos.writeObject(message);
-                oos.flush();
-                byte[] sendData = baos.toByteArray();
 
                 DatagramPacket sendPacket = new DatagramPacket(
-                        sendData, sendData.length,
+                        baos.toByteArray(), baos.size(),
                         neighbor.getAddress(), MESSAGE_PORT
                 );
                 socket.send(sendPacket);
 
-                System.out.println("🔄 Переслано сообщение " + message.getMessageId() +
-                        " узлу " + neighbor.getNodeId());
-
             } catch (Exception e) {
-                System.err.println("Ошибка пересылки: " + e.getMessage());
+                // Игнорируем ошибки пересылки
             }
         }
     }
@@ -140,30 +149,58 @@ public class MessageService {
                 MeshMessage.MessageType.USER_MESSAGE
         );
 
-        // Добавляем в обработанные, чтобы не получить свое же сообщение
         processedMessages.add(message.getMessageId());
+        awaitingAck.add(message.getMessageId());
 
-        // Отправляем всем соседям
-        for (NodeInfo neighbor : routingTable.getAllNeighbors()) {
-            try {
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                ObjectOutputStream oos = new ObjectOutputStream(baos);
-                oos.writeObject(message);
-                oos.flush();
-                byte[] sendData = baos.toByteArray();
+        System.out.println("📤 Отправка сообщения узлу " + targetId + "...");
 
-                DatagramPacket sendPacket = new DatagramPacket(
-                        sendData, sendData.length,
-                        neighbor.getAddress(), MESSAGE_PORT
-                );
-                socket.send(sendPacket);
+        // Отправляем с подтверждением
+        boolean delivered = sendWithAck(message);
 
-                System.out.println("📤 Отправлено сообщение узлу " + neighbor.getNodeId());
-
-            } catch (Exception e) {
-                System.err.println("Ошибка отправки: " + e.getMessage());
-            }
+        if (delivered) {
+            System.out.println("✅ Сообщение доставлено");
+        } else {
+            System.out.println("❌ Не удалось доставить сообщение (нет подтверждения)");
         }
+        System.out.print("mesh> ");
+    }
+
+    private boolean sendWithAck(MeshMessage message) {
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            // Отправляем всем соседям
+            for (NodeInfo neighbor : routingTable.getAllNeighbors()) {
+                try {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    ObjectOutputStream oos = new ObjectOutputStream(baos);
+                    oos.writeObject(message);
+
+                    DatagramPacket packet = new DatagramPacket(
+                            baos.toByteArray(), baos.size(),
+                            neighbor.getAddress(), MESSAGE_PORT
+                    );
+                    socket.send(packet);
+
+                } catch (Exception e) {
+                    // Игнорируем
+                }
+            }
+
+            // Ждем подтверждение
+            try {
+                Thread.sleep(ACK_TIMEOUT);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+
+            if (!awaitingAck.contains(message.getMessageId())) {
+                return true; // получили подтверждение
+            }
+
+            System.out.println("🔄 Попытка " + attempt + " из " + MAX_RETRIES);
+        }
+
+        awaitingAck.remove(message.getMessageId());
+        return false;
     }
 
     public void broadcastMessage(String text) {
@@ -176,36 +213,43 @@ public class MessageService {
 
         processedMessages.add(message.getMessageId());
 
+        int sentCount = 0;
         for (NodeInfo neighbor : routingTable.getAllNeighbors()) {
             try {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 ObjectOutputStream oos = new ObjectOutputStream(baos);
                 oos.writeObject(message);
-                oos.flush();
-                byte[] sendData = baos.toByteArray();
 
-                DatagramPacket sendPacket = new DatagramPacket(
-                        sendData, sendData.length,
+                DatagramPacket packet = new DatagramPacket(
+                        baos.toByteArray(), baos.size(),
                         neighbor.getAddress(), MESSAGE_PORT
                 );
-                socket.send(sendPacket);
+                socket.send(packet);
+                sentCount++;
 
             } catch (Exception e) {
-                System.err.println("Ошибка broadcast: " + e.getMessage());
+                System.err.println("Ошибка отправки соседу " + neighbor.getNodeId());
             }
         }
-        System.out.println("📢 Broadcast отправлен всем соседям");
+
+        System.out.println("📢 Broadcast отправлен " + sentCount + " соседям");
+        System.out.print("mesh> ");
     }
 
     private void displayMessage(MeshMessage message) {
-        System.out.println("\n");
-        System.out.println("📩 ПОЛУЧЕНО СООБЩЕНИЕ:");
-        System.out.println("   От: " + message.getSenderId());
-        System.out.println("   Кому: " + message.getTargetId());
-        System.out.println("   Текст: " + message.getText());
-        System.out.println("   ID: " + message.getMessageId());
-        System.out.println("   TTL: " + message.getTtl());
-        System.out.println("\n");
+        System.out.println("\n" + "╔" + "═".repeat(48) + "╗");
+        System.out.println("║ 📩 НОВОЕ СООБЩЕНИЕ " + " ".repeat(30) + "║");
+        System.out.println("╠" + "═".repeat(48) + "╣");
+        System.out.println("║ От:    " + padRight(message.getSenderId(), 40) + "║");
+        System.out.println("║ Кому:  " + padRight(message.getTargetId(), 40) + "║");
+        System.out.println("║ Текст: " + padRight(message.getText(), 40) + "║");
+        System.out.println("╚" + "═".repeat(48) + "╝\n");
+        System.out.print("mesh> ");
+    }
+
+    private String padRight(String s, int n) {
+        if (s.length() > n) return s.substring(0, n-3) + "...";
+        return String.format("%-" + n + "s", s);
     }
 
     public void stop() {

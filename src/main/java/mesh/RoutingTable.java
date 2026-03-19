@@ -23,15 +23,23 @@ public class RoutingTable {
     // Добавить или обновить соседа
     public void updateNeighbor(NodeInfo neighbor) {
         neighbor.setLastSeen(new java.util.Date().toInstant());
+
+        // Проверяем, действительно ли это новый сосед
+        boolean isNew = !neighbors.containsKey(neighbor.getNodeId());
+
         neighbors.put(neighbor.getNodeId(), neighbor);
         lastUpdate.put(neighbor.getNodeId(), System.currentTimeMillis());
-
-        // Обновляем маршрут до этого соседа
         routes.put(neighbor.getNodeId(), neighbor.getNodeId());
 
-        // Логируем
-        System.out.println("📡 Таблица маршрутизации обновлена. Соседей: " + neighbors.size());
+        // Выводим сообщение ТОЛЬКО для нового соседа
+        if (isNew) {
+            System.out.println("\n🔔 Новый сосед обнаружен: " + neighbor);
+            System.out.print("mesh> "); // Возвращаем приглашение ввода
+        }
     }
+
+// Убираем автоматическую печать таблицы
+// routingTable.printRoutingTable(); - удаляем эту строку из DiscoveryService
 
     // Удалить неактивных соседей
     public void cleanupStaleNeighbors(long timeoutMs) {

@@ -45,17 +45,18 @@ public class MeshNode {
     private void startConsoleInterface() {
         Scanner scanner = new Scanner(System.in);
 
-        System.out.println("\n");
-        System.out.println("🌐 MESH NETWORK CONSOLE");
-        System.out.println();
-        System.out.println("Команды:");
-        System.out.println("  /list              - показать всех известных узлов");
-        System.out.println("  /route             - показать таблицу маршрутизации");
-        System.out.println("  /send <id> <текст> - отправить сообщение узлу");
-        System.out.println("  /broadcast <текст> - отправить всем");
-        System.out.println("  /clear             - очистить экран");
-        System.out.println("  /exit              - выход");
-        System.out.println();
+        System.out.println("\n" + "╔" + "═".repeat(58) + "╗");
+        System.out.println("║ " + "🌐 MESH NETWORK CONSOLE".toUpperCase() + " ".repeat(31) + "║");
+        System.out.println("╠" + "═".repeat(58) + "╣");
+        System.out.println("║ ID: " + padRight(nodeId, 53) + "║");
+        System.out.println("║ IP: " + padRight(NetworkUtils.getLocalIpAddress(), 53) + "║");
+        System.out.println("╠" + "═".repeat(58) + "╣");
+        System.out.println("║ Команды:                                            ║");
+        System.out.println("║  /list              - показать все узлы             ║");
+        System.out.println("║  /send <id> <текст> - отправить сообщение           ║");
+        System.out.println("║  /broadcast <текст> - отправить всем                ║");
+        System.out.println("║  /exit              - выход                         ║");
+        System.out.println("╚" + "═".repeat(58) + "╝\n");
 
         while (running) {
             System.out.print("mesh@" + nodeId.substring(0, 6) + "> ");
@@ -68,19 +69,20 @@ public class MeshNode {
                 break;
             } else if (input.equals("/list")) {
                 printNodes();
-            } else if (input.equals("/route")) {
-                routingTable.printRoutingTable();
-            } else if (input.equals("/clear")) {
-                clearScreen();
             } else if (input.startsWith("/send ")) {
                 handleSendCommand(input);
             } else if (input.startsWith("/broadcast ")) {
                 handleBroadcastCommand(input);
             } else {
-                System.out.println("❌ Неизвестная команда. Введите /help для списка команд");
+                System.out.println("❌ Неизвестная команда");
             }
         }
-        scanner.close();
+    }
+
+    private String padRight(String s, int n) {
+        if (s == null) return " ".repeat(n);
+        if (s.length() > n) return s.substring(0, n-3) + "...";
+        return String.format("%-" + n + "s", s);
     }
 
     private void printNodes() {
